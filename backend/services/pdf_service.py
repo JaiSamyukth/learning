@@ -8,12 +8,21 @@ from typing import List
 from config.settings import settings
 from utils.storage import pdf_contexts, pdf_metadata, storage_manager, storage_manager
 from utils.cache import cache_service
-from utils.logging_config import get_logger
+from utils.logger import get_logger
 
 # Use enhanced logger
 pdf_logger = get_logger("pdf_service")
 from models.pdf import PDFInfo, PDFListResponse, PDFUploadResponse, PDFMetadata
 import warnings
+
+# RAG Integration
+try:
+    from services.rag_integration_service import rag_integration_service
+    RAG_INTEGRATION_AVAILABLE = True
+    pdf_logger.info("RAG integration available for PDF service")
+except ImportError as e:
+    RAG_INTEGRATION_AVAILABLE = False
+    pdf_logger.warning(f"RAG integration not available: {e}")
 
 # Suppress PyPDF2 warnings when it's imported
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="PyPDF2")
@@ -266,12 +275,32 @@ class PDFService:
             })
             storage_manager.safe_set(pdf_metadata, token, metadata)
 
-            return PDFUploadResponse(
-                message="PDF uploaded and processed successfully",
-                filename=unique_filename,
-                metadata=metadata,
-                text_length=len(text_content)
-            )
+            # RAG Integration: Process with RAG if available
+            rag_result = {}
+            if RAG_INTEGRATION_AVAILABLE:
+                try:
+                    pdf_logger.info(f"Processing {unique_filename} with RAG integration")
+                    rag_result = await rag_integration_service.process_pdf_with_rag(
+                        str(file_path), unique_filename, token
+                    )
+                    pdf_logger.info(f"RAG processing result: {rag_result.get('rag_processed', False)}")
+                except Exception as e:
+                    pdf_logger.warning(f"RAG processing failed, continuing with basic processing: {e}")
+                    rag_result = {"rag_processed": False, "error": str(e)}
+
+            # Prepare response with RAG info
+            response_data = {
+                "message": "PDF uploaded and processed successfully",
+                "filename": unique_filename,
+                "metadata": metadata,
+                "text_length": len(text_content)
+            }
+
+            # Add RAG information if available
+            if rag_result:
+                response_data["rag_info"] = rag_result
+
+            return PDFUploadResponse(**response_data)
 
         except Exception as e:
             # Clean up file if processing failed

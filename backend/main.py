@@ -1,12 +1,18 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Import warning suppression first
 from utils.suppress_warnings import suppress_third_party_warnings
 
 from config.settings import settings
 from routes import auth, pdf, chat
+# RAG routes temporarily disabled for testing
+# from routes import rag
 from utils.logging_config import configure_logging, get_logger
 import asyncio
 import platform
@@ -60,6 +66,8 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(pdf.router)
 app.include_router(chat.router)
+# RAG router temporarily disabled for testing
+# app.include_router(rag.router)
 
 # Health check endpoint
 @app.get("/")

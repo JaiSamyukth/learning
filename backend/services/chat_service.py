@@ -21,10 +21,24 @@ import logging
 import asyncio
 import concurrent.futures
 from threading import Lock
-from utils.logging_config import get_logger
+from utils.logger import get_logger
 
 # Use enhanced logger
 chat_logger = get_logger("chat_service")
+
+# RAG Integration - Lazy import to avoid circular imports
+rag_integration_service = None
+
+def get_rag_integration_service():
+    global rag_integration_service
+    if rag_integration_service is None:
+        try:
+            from services.rag_integration_service import rag_integration_service as ris
+            rag_integration_service = ris
+            chat_logger.info("RAG integration loaded for chat service")
+        except ImportError as e:
+            chat_logger.warning(f"RAG integration not available: {e}")
+    return rag_integration_service
 
 # Add the parent directory to the path to import from api_rotation
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -219,119 +233,39 @@ def safe_storage_access(operation, token: str, *args, **kwargs):
 class ChatService:
     @staticmethod
     async def chat(message: ChatMessage, token: str) -> ChatResponse:
-        # Thread-safe check for PDF context with better error handling
-        def check_pdf_context():
-            if token not in pdf_contexts:
-                chat_logger.error(f"No PDF context found for token: {token}")
-                raise HTTPException(status_code=400, detail="No PDF selected. Please select a PDF first.")
-            context = pdf_contexts[token]
-            if not context or 'content' not in context:
-                chat_logger.error(f"Invalid PDF context for token: {token}")
-                raise HTTPException(status_code=400, detail="PDF context is invalid. Please select a PDF again.")
-            return context
+        """RAG-enhanced chat - no legacy fallback"""
+        chat_logger.info("Processing chat message with RAG",
+                        token=token,
+                        message_length=len(message.message))
 
         try:
-            pdf_context = safe_storage_access(check_pdf_context, token)
-        except Exception as e:
-            chat_logger.error(f"Error accessing PDF context for token {token}: {str(e)}")
-            raise
+            chat_logger.info("Using RAG-enhanced chat")
+            rag_service = get_rag_integration_service()
+            if rag_service is None:
+                raise Exception("RAG integration service not available")
+            rag_result = await rag_service.enhanced_chat(message.message, token)
 
-        # Thread-safe initialization of chat history
-        def init_chat_history():
-            if token not in chat_histories:
-                chat_histories[token] = []
-            return chat_histories[token]
-
-        chat_history = safe_storage_access(init_chat_history, token)
-
-        # Check if this is a Q&A generation request (needs full content)
-        is_qa_generation = any(keyword in message.message.lower() for keyword in [
-            'generate', 'create', 'analyze this document', 'questions', 'sections', 'comprehensive'
-        ])
-
-        # Use more content for Q&A generation, limited content for regular chat
-        content_limit = 50000 if is_qa_generation else 15000
-        pdf_content = pdf_context['content'][:content_limit]
-
-        # Add indication if content was truncated
-        content_suffix = "..." if len(pdf_context['content']) > content_limit else ""
-
-        # Get recent chat history safely
-        def get_recent_history():
-            return chat_histories[token][-3:] if token in chat_histories else []
-
-        recent_history = safe_storage_access(get_recent_history, token)
-
-        # Prepare context for Gemini
-        context = f"""
-        You are an AI assistant helping students learn from their selected PDF document.
-
-        Document: {pdf_context['filename']}
-        Content: {pdf_content}{content_suffix}
-
-        Previous conversation:
-        {chr(10).join([f"User: {msg['user']}{chr(10)}Assistant: {msg['assistant']}" for msg in recent_history])}
-
-        Current question: {message.message}
-
-        Please provide a helpful, educational response based on the document content and conversation history.
-        """
-
-        try:
-            # Generate response using async Gemini with rotated API key - TRUE CONCURRENCY
-            rotated_model = await get_rotated_model_async()
-            ai_response = await generate_content_async(rotated_model, context)
-
-            # Validate response
-            if not ai_response or len(ai_response.strip()) < 10:
-                raise Exception("AI response too short or empty")
-
-            # Store in chat history thread-safely
-            def store_chat_entry():
-                chat_histories[token].append({
-                    "user": message.message,
-                    "assistant": ai_response,
-                    "timestamp": datetime.now().isoformat()
-                })
-
-            safe_storage_access(store_chat_entry, token)
-
-            chat_logger.info(f"Successfully generated response for token {token}, length: {len(ai_response)}")
-            return ChatResponse(
-                response=ai_response,
-                timestamp=datetime.now().isoformat()
-            )
-
-        except HTTPException:
-            # Re-raise HTTP exceptions as-is
-            raise
-        except Exception as e:
-            error_msg = str(e)
-            chat_logger.error(f"Failed to generate response for token {token}: {error_msg}")
-
-            # Check if it's a rate limit or overload error
-            if any(keyword in error_msg.lower() for keyword in ['rate limit', 'quota', 'overload', 'timeout']):
-                fallback_response = f"I'm currently experiencing high demand. Please wait a moment and try your question again. Your question about '{pdf_context.get('filename', 'the document')}' is important to me."
+            if rag_result.get("rag_used", False):
+                chat_logger.info("RAG chat successful")
+                return ChatResponse(
+                    response=rag_result.get("response", ""),
+                    timestamp=rag_result.get("timestamp", datetime.now().isoformat())
+                )
             else:
-                fallback_response = f"I apologize, but I'm having trouble processing your question about the document '{pdf_context.get('filename', 'the selected PDF')}' right now. Please try rephrasing your question or try again in a moment."
-
-            # Store fallback in chat history
-            def store_fallback_entry():
-                chat_histories[token].append({
-                    "user": message.message,
-                    "assistant": fallback_response,
-                    "timestamp": datetime.now().isoformat()
-                })
-
-            try:
-                safe_storage_access(store_fallback_entry, token)
-            except:
-                pass  # Don't fail if we can't store the fallback
-
+                # If RAG is not used, return an error message
+                chat_logger.error("RAG system failed to process the request")
+                return ChatResponse(
+                    response="I'm sorry, but I'm unable to process your request right now. Please ensure you have uploaded a document and try again.",
+                    timestamp=datetime.now().isoformat()
+                )
+        except Exception as e:
+            chat_logger.error(f"RAG chat failed: {e}")
             return ChatResponse(
-                response=fallback_response,
+                response="I'm experiencing technical difficulties. Please try again later.",
                 timestamp=datetime.now().isoformat()
             )
+
+
 
     @staticmethod
     def get_chat_history(token: str) -> dict:
@@ -353,200 +287,44 @@ class ChatService:
 
     @staticmethod
     async def generate_questions(token: str, topic: str = None, count: int = 25, mode: str = "practice") -> ChatResponse:
-        chat_logger.info("Generating questions", 
-                        token=token, 
-                        topic=topic, 
-                        count=count, 
+        chat_logger.info("Generating questions with RAG",
+                        token=token,
+                        topic=topic,
+                        count=count,
                         mode=mode)
-        
-        # Get PDF context thread-safely
-        def get_pdf_context():
-            if token not in pdf_contexts:
-                chat_logger.error("No PDF context found", token=token)
-                raise HTTPException(status_code=400, detail="No PDF selected")
-            return pdf_contexts[token]
-
-        pdf_context = safe_storage_access(get_pdf_context, token)
-        full_content = pdf_context['content']
-        
-        chat_logger.info("Processing PDF for questions", 
-                        filename=pdf_context['filename'],
-                        content_length=len(full_content))
-
-        # Check if content is too short
-        if len(full_content.strip()) < 100:
-            raise HTTPException(status_code=400, detail="Document content is too short to generate meaningful questions")
-
-        # Prepare context for Gemini with full content
-        topic_instruction = ""
-        if topic and topic.strip():
-            topic_instruction = f"""
-        SPECIFIC TOPIC FOCUS: "{topic.strip()}"
-        Focus your questions specifically on this topic, but use the full document content as context to ensure accuracy and completeness.
-        """
-
-        # Format instructions based on mode
-        if mode == "quiz":
-            format_instruction = """
-        FORMAT: Create Multiple Choice Questions (MCQ) with 4 options each.
-
-        CRITICAL JSON REQUIREMENTS:
-        - Respond with ONLY a valid JSON object
-        - Do not include any text, explanations, or markdown before or after the JSON
-        - Use proper JSON syntax with double quotes for all strings
-        - Ensure all brackets and braces are properly closed
-        - Do not include trailing commas
-
-        EXACT JSON FORMAT (copy this structure):
-        {
-          "questions": [
-            {
-              "question": "What is the main concept of Ikigai according to the document?",
-              "options": ["A) A Japanese martial art", "B) A reason for being or life purpose", "C) A type of meditation", "D) A business strategy"],
-              "correctAnswer": "B"
-            },
-            {
-              "question": "Which of the following is mentioned as a Blue Zone in the document?",
-              "options": ["A) Tokyo, Japan", "B) New York, USA", "C) Okinawa, Japan", "D) London, UK"],
-              "correctAnswer": "C"
-            }
-          ]
-        }
-
-        MCQ CONTENT REQUIREMENTS:
-        - Each question must have exactly 4 options labeled A), B), C), D)
-        - Only ONE option should be correct based on the document content
-        - Make incorrect options plausible but clearly wrong based on the text
-        - Ensure the correctAnswer field contains only the letter (A, B, C, or D)
-        - All questions must be answerable from the document content provided
-        - Each option should be a complete, standalone answer choice
-
-        JSON SYNTAX RULES:
-        - Use double quotes (") for all strings, never single quotes
-        - Separate array items with commas, but no comma after the last item
-        - Ensure proper nesting of objects and arrays
-        - No comments or extra text allowed in JSON
-        """
-        else:
-            format_instruction = """
-        FORMAT: Create open-ended questions for practice. Respond with ONLY a valid JSON object:
-        {
-          "questions": [
-            "What is the main concept of Ikigai according to the document?",
-            "Explain the characteristics of Blue Zones mentioned in the text.",
-            "How does the document relate Ikigai to logotherapy?"
-          ]
-        }
-        """
-
-        context = f"""
-        You are an educational AI assistant. Analyze the following document content and create comprehensive questions for learning.
-
-        Document: {pdf_context['filename']}
-        {topic_instruction}
-
-        FULL DOCUMENT CONTENT:
-        {full_content}
-
-        TASK: Create exactly {count} educational questions based on the document content above{' focusing on the specified topic' if topic and topic.strip() else ''}.
-
-        REQUIREMENTS:
-        1. Read and analyze the ENTIRE document content provided above
-        2. {'Focus specifically on the topic: "' + topic.strip() + '" while using the full document as context' if topic and topic.strip() else 'Create questions that cover the full scope of the document'}
-        3. Generate Question according to Blooms Taxonomoy of Analyzing, Understanding, Remembering, Evaluating and Creating. Distribute the questions across multiple levels of Bloom's Taxonomy (Remembering, Understanding, Applying, Analyzing, Evaluating, Creating).
-        4. Include questions about:
-           - Key concepts and definitions from the text
-           - Important details and facts mentioned
-           - Practical applications discussed
-           - Examples and case studies provided
-           - Critical thinking questions about the content
-           - Main themes and ideas
-           - Specific processes or methods described
-           - Important people, places, or events mentioned
-           - Cause and effect relationships
-           - Comparisons and contrasts made in the text
-
-        {format_instruction}
-
-        Make sure:
-        - Questions are specific to the actual document content provided above
-        - Each question can be answered using information from the document
-        - Questions progress from basic to advanced understanding
-        - {'Focus specifically on the topic "' + topic.strip() + '" while ensuring all questions can be answered from the document content' if topic and topic.strip() else 'Cover all major topics and themes in the document'}
-        - Use actual terms, concepts, and examples from the text provided
-        - Questions are diverse and cover different aspects of the {'specified topic' if topic and topic.strip() else 'content'}
-
-        Generate exactly {count} questions now based on the full document content provided above{' focusing on the specified topic' if topic and topic.strip() else ''}.
-        """
 
         try:
-            # Generate response using async Gemini with rotated API key
-            chat_logger.info("Sending request to Gemini AI")
-            rotated_model = await get_rotated_model_async()
-            ai_response = await generate_content_async(rotated_model, context)
-            chat_logger.info("Gemini AI response received")
+            chat_logger.info("Using RAG-enhanced question generation")
+            rag_service = get_rag_integration_service()
+            if rag_service is None:
+                raise Exception("RAG integration service not available")
+            rag_result = await rag_service.enhanced_question_generation(token, topic, count, mode)
 
-            if not ai_response:
-                chat_logger.error("No response from Gemini AI")
-                raise HTTPException(status_code=500, detail="No response from AI")
-
-            ai_response = ai_response.strip()
-            chat_logger.info("Gemini AI response received", 
-                           response_length=len(ai_response))
-
-            # Clean and validate JSON response
-            cleaned_response = ai_response.strip()
-
-            # Remove markdown code blocks if present
-            if cleaned_response.startswith('```json'):
-                cleaned_response = cleaned_response[7:]
-            if cleaned_response.startswith('```'):
-                cleaned_response = cleaned_response[3:]
-            if cleaned_response.endswith('```'):
-                cleaned_response = cleaned_response[:-3]
-
-            cleaned_response = cleaned_response.strip()
-
-            # Validate that response contains JSON-like structure
-            if '{' not in cleaned_response or '}' not in cleaned_response:
-                chat_logger.warning("Response doesn't contain JSON structure", response=ai_response)
-                
-                # Fallback: create a simple question structure
-                fallback_questions = [
-                    {
-                        "question": f"What is the main topic discussed in this document?",
-                        "options": ["Main topic", "Secondary topic", "Supporting detail", "Conclusion"],
-                        "correct_answer": "Main topic",
-                        "explanation": "This is a fallback question based on the document content."
-                    }
-                ]
-                return fallback_questions
-
-            # Try to extract JSON from the response
-            import json
-            import re
-
-            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', ai_response)
-            if json_match:
-                try:
-                    evaluation_data = json.loads(json_match.group())
-
-                    return ChatResponse(
-                        response=json.dumps(evaluation_data),
-                        timestamp=datetime.now().isoformat()
-                    )
-                except json.JSONDecodeError:
-                    pass
-
-            # Fallback if JSON parsing fails
-
-                # Ensure it has the expected structure
-                if 'questions' not in parsed_json:
-                    raise ValueError("JSON missing 'questions' field")
-
+            if rag_result.get("rag_used", False):
+                chat_logger.info("RAG question generation successful")
+                import json
+                return ChatResponse(
+                    response=json.dumps(rag_result.get("questions", [])),
+                    timestamp=datetime.now().isoformat()
+                )
+            else:
+                # If RAG is not used, return an error message
+                chat_logger.error("RAG system failed to generate questions")
+                return ChatResponse(
+                    response=json.dumps([{
+                        "error": "Unable to generate questions. Please ensure you have uploaded a document and try again."
+                    }]),
+                    timestamp=datetime.now().isoformat()
+                )
         except Exception as e:
-            chat_logger.error("Error generating questions", error=str(e))
-            raise HTTPException(status_code=500, detail=f"Failed to generate questions: {str(e)}")
+            chat_logger.error(f"RAG question generation failed: {e}")
+            return ChatResponse(
+                response=json.dumps([{
+                    "error": "I'm experiencing technical difficulties generating questions. Please try again later."
+                }]),
+                timestamp=datetime.now().isoformat()
+            )
+
 
     @staticmethod
     async def evaluate_answer(request: AnswerEvaluationRequest, token: str) -> AnswerEvaluationResponse:

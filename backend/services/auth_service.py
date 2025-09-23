@@ -4,7 +4,7 @@ from config.settings import settings
 from utils.storage import user_sessions
 from utils.security import create_session_id
 from models.auth import LoginRequest, LoginResponse
-from utils.logging_config import get_logger
+from utils.logger import get_logger
 
 # Use enhanced logger
 logger = get_logger("auth_service")

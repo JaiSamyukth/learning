@@ -1,0 +1,18 @@
+2025-09-23 15:03:11 | WARNING | rag_integration | warning:70 | RAG system not available: cannot import name 'cached_download' from 'huggingface_hub' (C:\Users\CSELAB5\AppData\Local\Programs\Python\Python311\Lib\site-packages\huggingface_hub\__init__.py)
+2025-09-23 15:03:11 | WARNING | rag_integration | warning:70 | RAG integration service running in fallback mode
+2025-09-23 15:03:38 | WARNING | rag_integration | warning:70 | RAG system not available: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.5/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+
+For further information visit https://errors.pydantic.dev/2.5/u/import-error
+2025-09-23 15:03:38 | WARNING | rag_integration | warning:70 | RAG integration service running in fallback mode
+2025-09-23 15:05:32 | WARNING | rag_integration | warning:70 | RAG system not available: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.5/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+
+For further information visit https://errors.pydantic.dev/2.5/u/import-error
+2025-09-23 15:05:32 | WARNING | rag_integration | warning:70 | RAG integration service running in fallback mode
+2025-09-23 15:08:28 | WARNING | rag_integration | warning:70 | RAG system not available: No module named 'backend'
+2025-09-23 15:08:28 | WARNING | rag_integration | warning:70 | RAG integration service running in fallback mode
+2025-09-23 15:08:59 | WARNING | rag_integration | warning:70 | RAG system not available: `BaseSettings` has been moved to the `pydantic-settings` package. See https://docs.pydantic.dev/2.5/migration/#basesettings-has-moved-to-pydantic-settings for more details.
+
+For further information visit https://errors.pydantic.dev/2.5/u/import-error
+2025-09-23 15:08:59 | WARNING | rag_integration | warning:70 | RAG integration service running in fallback mode
+2025-09-23 15:09:42 | WARNING | rag_integration | warning:70 | RAG system not available: No module named 'backend'
+2025-09-23 15:09:42 | WARNING | rag_integration | warning:70 | RAG integration service running in fallback mode
